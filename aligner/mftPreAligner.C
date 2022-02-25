@@ -50,6 +50,13 @@ class preAlignerMFT
     return gloC;
   }
 
+  auto getCluster(o2::mft::TrackMFT mftTrack, int nCluster)
+  { // Retrieve the MFT cluster position in global coordinates
+    auto offset = mftTrack.getExternalClusterIndexOffset();
+    auto clsEntry = trackExtClsVec[offset + nCluster];
+    return toGlobalCoordinates(mCompClusters[clsEntry]);
+  };
+
  private:
   std::unique_ptr<TProfile> mXResiduals, mYResiduals;
   std::vector<o2::mft::TrackMFT> mMFTTracks, *trackMFTVecP = &mMFTTracks;
@@ -114,6 +121,12 @@ inline void preAlignerMFT::computeResiduals(int layerA = -1, int layerB = -1)
 
   auto fillResidualProfiles = [this](auto track) {
     // loop over all track clusters, compute and fill TProfile histograms
+    for (auto icls = 0; icls < track.getNumberOfPoints(); icls++) {
+      const auto cluster = getCluster(track, icls);
+      track.propagateParamToZlinear(cluster.z());
+      // Calculate residuals
+      // Fill histograms
+    }
   };
 
   if (layerA == -1 or layerB == -1) {
@@ -181,12 +194,6 @@ inline void preAlignerMFT::UpdateTrackParameters(int layerA = -1, int layerB = -
       }
     }
     return -1;
-  };
-
-  auto getCluster = [this](o2::mft::TrackMFT mftTrack, int nCluster) { // Retrieve the MFT clutser position in global coordinates
-    auto offset = mftTrack.getExternalClusterIndexOffset();
-    auto clsEntry = trackExtClsVec[offset + nCluster];
-    return toGlobalCoordinates(mCompClusters[clsEntry]);
   };
 
   auto updateTrackParam = [](o2::mft::TrackMFT& track, const auto clusterA, const auto clusterB) { // Set linear track parameters
