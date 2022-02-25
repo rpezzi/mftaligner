@@ -16,7 +16,7 @@ class preAlignerMFT
   // Calculate alignment correction to centralize residuals for all tracks defined by the referece layers
   void preAlignStep(int layer1, int layer2)
   {
-    UpdateTrackParameters(); // Ensure all track parameters are consistent with current geometry
+    UpdateTrackParameters(layer1, layer2); // Ensure all track parameters are consistent with current geometry
     computeResiduals(layer1, layer2);
     auto thisCorrection = computeCorrectionsFromResiduals();
     applyAlignment(thisCorrection);
@@ -31,10 +31,6 @@ class preAlignerMFT
         break;
       }
     }
-  }
-
-  void runPrealigner()
-  {
   }
 
   o2::math_utils::Point3D<float> toGlobalCoordinates(o2::itsmft::CompClusterExt cluster)
@@ -106,7 +102,36 @@ inline void preAlignerMFT::initialize(std::string geometryFileName = "", std::st
 //_________________________________________________________________________________________________
 inline void preAlignerMFT::computeResiduals(int layerA = -1, int layerB = -1)
 {
+  // Compute residuals for each MFT sensor.
+
   std::cout << "Computing residuals" << std::endl;
+
+  auto layerFilter = [this, layerA, layerB](auto track) {
+    auto zLayerA = o2::mft::constants::LayerZPosition[layerA]; // TODO: make this alignment proof
+    auto zLayerB = o2::mft::constants::LayerZPosition[layerB];
+    return (std::abs(track.getZ() - zLayerA) < 0.2 or std::abs(track.getOutParam().getZ() - zLayerB) < 0.2);
+  };
+
+  auto fillResidualProfiles = [this](auto track) {
+    // loop over all track clusters, compute and fill TProfile histograms
+  };
+
+  if (layerA == -1 or layerB == -1) {
+    // compute residuals for all tracks and respective clusters
+    for (auto& track : mMFTTracks) {
+      fillResidualProfiles(track);
+    }
+  } else {
+    // compute unbiased residuals:
+    //   1. reference layers are fixed;
+    //   2. using only tracks with reference clusters in provided layers
+    //   3. This method assumes layerA and layerB are reference for the track sample.
+    for (auto& track : mMFTTracks) {
+      if (layerFilter(track)) {
+        fillResidualProfiles(track);
+      }
+    }
+  }
 }
 
 //_________________________________________________________________________________________________
@@ -118,8 +143,8 @@ inline void preAlignerMFT::drawResiduals()
 //_________________________________________________________________________________________________
 inline std::vector<o2::detectors::AlignParam> preAlignerMFT::computeCorrectionsFromResiduals()
 {
+  // Compute alignment parameters to centralize residuals in each MFT sensors
   std::cout << "Computing alignement corrections from residuals" << std::endl;
-
   std::vector<o2::detectors::AlignParam> params;
   return params;
 }
@@ -140,6 +165,10 @@ inline void preAlignerMFT::applyAlignment(std::vector<o2::detectors::AlignParam>
 //_________________________________________________________________________________________________
 inline void preAlignerMFT::UpdateTrackParameters(int layerA = -1, int layerB = -1)
 {
+  // This method updates track linear track parameters.
+  // By default all tracks are updated using a linear model computed using first and last track-clusters.
+  // If reference layers are provided, only those tracks with clusters in both layers are updated
+
   std::cout << "Updating track parameters for new geometry" << std::endl;
 
   auto getClusterIdLayer = [this](o2::mft::TrackMFT mftTrack, int layer) { // Returns the MFT
@@ -216,10 +245,10 @@ inline void preAlignerMFT::savePreAlignedGeometry(std::vector<o2::detectors::Ali
   std::cout << "Saving something..." << std::endl;
 }
 
+//_________________________________________________________________________________________________
 void mftPreAligner()
 {
   preAlignerMFT pa;
-  pa.runPrealigner();
 
   pa.initialize();
   pa.printTracks();
