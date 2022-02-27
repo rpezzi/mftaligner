@@ -1,3 +1,4 @@
+#include "CCDB/CcdbApi.h"
 #include <vector>
 
 class preAlignerMFT {
@@ -24,7 +25,9 @@ public:
                         // initialization for alignment linear tracks
   void savePreAlignedGeometry(
       std::vector<o2::detectors::AlignParam> alignment,
-      std::string alignParamFileName); // Saves ccdb-like alignment objects
+      std::string alignParamFileName, const std::string &ccdbHost, long tmin,
+      long tmax,
+      const std::string &objectPath); // Saves ccdb-like alignment objects
 
   // Pre alignment step based on two reference layers
   // Calculate alignment correction to centralize residuals for all tracks
@@ -35,7 +38,8 @@ public:
     computeResiduals(layer1, layer2);
     auto thisCorrection = computeCorrectionsFromResiduals();
     applyAlignment(thisCorrection);
-    savePreAlignedGeometry(thisCorrection, "o2sim-prealignedmft.root");
+    savePreAlignedGeometry(thisCorrection, "o2sim-prealignedmft.root", "", 0,
+                           -1, "");
   }
 
   void printTracks(int nTracks = 5) {
@@ -341,8 +345,35 @@ inline void preAlignerMFT::UpdateTrackParameters(int layerA = -1,
 //_________________________________________________________________________________________________
 inline void preAlignerMFT::savePreAlignedGeometry(
     std::vector<o2::detectors::AlignParam> alignment,
-    std::string alignParamFileName) {
+    std::string alignParamFileName, const std::string &ccdbHost, long tmin,
+    long tmax, const std::string &objectPath) {
   std::cout << "Saving something..." << std::endl;
+
+  if (!ccdbHost.empty()) {
+    std::string path = objectPath.empty()
+                           ? o2::base::DetectorNameConf::getAlignmentPath(
+                                 o2::detectors::DetID::MFT)
+                           : objectPath;
+    path = "MFT/test_CCDB/MFT"; // testing the ccdb
+    printf("Storing alignment object on  %s/%s \n", ccdbHost, path);
+    o2::ccdb::CcdbApi api;
+    std::map<std::string, std::string> metadata; // can be empty
+    api.init(
+        ccdbHost.c_str()); // or http://localhost:8080 for a local installation
+    metadata["test"] = fmt::format("Alignment objects for DetID:{}",
+                                   o2::detectors::DetID::MFT);
+    // store abitrary user object in strongly typed manner
+    api.storeAsTFileAny(&alignment, path, metadata, tmin, tmax);
+  }
+
+  if (!alignParamFileName.empty()) {
+    printf("Storing MFT alignment in local file %s \n",
+           alignParamFileName.c_str());
+    TFile algFile(alignParamFileName.c_str(), "recreate");
+    algFile.WriteObjectAny(&alignment, "std::vector<o2::detectors::AlignParam>",
+                           "alignment");
+    algFile.Close();
+  }
 }
 
 //_________________________________________________________________________________________________
