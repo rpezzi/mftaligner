@@ -33,20 +33,10 @@ class preAlignerMFT
     }
   }
 
-  o2::math_utils::Point3D<float> toGlobalCoordinates(o2::itsmft::CompClusterExt cluster)
+  o2::math_utils::Point3D<float> toGlobalCoordinates(const o2::BaseCluster<float> cluster)
   {
-    // Get the global position of the cluster
-    auto chipID = cluster.getChipID();
-    auto pattID = cluster.getPatternID();
-
-    o2::math_utils::Point3D<float> locC;
-
-    if (pattID != o2::itsmft::CompCluster::InvalidPatternID) {
-      locC = mDict.getClusterCoordinates(cluster);
-    }
-
     // Transformation to the local --> global
-    auto gloC = gman->getMatrixL2G(chipID) * locC;
+    auto gloC = gman->getMatrixL2G(cluster.getSensorID()) * cluster.getXYZ();
     return gloC;
   }
 
@@ -54,7 +44,7 @@ class preAlignerMFT
   { // Retrieve the MFT cluster position in global coordinates
     auto offset = mftTrack.getExternalClusterIndexOffset();
     auto clsEntry = trackExtClsVec[offset + nCluster];
-    return toGlobalCoordinates(mCompClusters[clsEntry]);
+    return toGlobalCoordinates(mUnCompClusters[clsEntry]);
   };
 
  private:
@@ -62,6 +52,9 @@ class preAlignerMFT
   std::vector<o2::mft::TrackMFT> mMFTTracks, *trackMFTVecP = &mMFTTracks;
   std::vector<int> trackExtClsVec, *trackExtClsVecP = &trackExtClsVec;
   std::vector<o2::itsmft::CompClusterExt> mCompClusters, *clsVecP = &mCompClusters;
+  std::vector<unsigned char> mPatterns, *mPatternsP = &mPatterns;
+
+  std::vector<o2::BaseCluster<float>> mUnCompClusters; // MFT Clusters in local coordinate system
 
   o2::itsmft::TopologyDictionary mDict;
   o2::itsmft::ChipMappingMFT mftChipMapper;
@@ -90,6 +83,7 @@ inline void preAlignerMFT::initialize(std::string geometryFileName = "", std::st
   TFile clusterFile("mftclusters.root");
   clsTree = (TTree*)clusterFile.Get("o2sim");
   clsTree->SetBranchAddress("MFTClusterComp", &clsVecP);
+  clsTree->SetBranchAddress("MFTClusterPatt", &mPatternsP);
   std::cout << "Loading MFT clusters file with " << clsTree->GetEntries() << " entries\n";
   clsTree->GetEntry(0);
 
@@ -103,6 +97,33 @@ inline void preAlignerMFT::initialize(std::string geometryFileName = "", std::st
   } else {
     printf("Can not run without dictionary !\n");
     exit;
+  }
+
+  // Cache compact cluster positions (use topology dictionary and clusters patterns only once)
+  mUnCompClusters.reserve(mCompClusters.size());
+  std::vector<unsigned char>::iterator pattIt = mPatterns.begin();
+
+  for (const auto& compCluster : mCompClusters) {
+
+    auto chipID = compCluster.getChipID();
+    auto pattID = compCluster.getPatternID();
+
+    o2::math_utils::Point3D<float> locC;
+    float sigmaX2 = 1.806335945e-06F, sigmaY2 = 2.137443971e-06F; // Dummy COG errors (about half pixel size) from o2::mft::ioutils::DefClusError2Row and o2::mft::ioutils::DefClusError2Col
+    if (pattID != o2::itsmft::CompCluster::InvalidPatternID) {
+      sigmaX2 = mDict.getErr2X(pattID); // ALPIDE local X coordinate => MFT global X coordinate (ALPIDE rows)
+      sigmaY2 = mDict.getErr2Z(pattID); // ALPIDE local Z coordinate => MFT global Y coordinate (ALPIDE columns)
+      if (!mDict.isGroup(pattID)) {
+        locC = mDict.getClusterCoordinates(compCluster);
+      } else {
+        o2::itsmft::ClusterPattern patt(pattIt);
+        locC = mDict.getClusterCoordinates(compCluster, patt);
+      }
+    } else {
+      o2::itsmft::ClusterPattern patt(pattIt);
+      locC = mDict.getClusterCoordinates(compCluster, patt, false);
+    }
+    mUnCompClusters.emplace_back(chipID, locC);
   }
 }
 
@@ -188,7 +209,7 @@ inline void preAlignerMFT::UpdateTrackParameters(int layerA = -1, int layerB = -
     auto offset = mftTrack.getExternalClusterIndexOffset();
     for (auto icls = 0; icls < mftTrack.getNumberOfPoints(); icls++) {
       auto clsEntry = trackExtClsVec[offset + icls];
-      auto clsLayer = mftChipMapper.chip2Layer(mCompClusters[clsEntry].getChipID());
+      auto clsLayer = mftChipMapper.chip2Layer(mUnCompClusters[clsEntry].getSensorID());
       if (layer == clsLayer) {
         return icls;
       }
