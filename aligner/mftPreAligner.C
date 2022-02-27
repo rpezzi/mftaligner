@@ -12,7 +12,9 @@ public:
   computeResiduals(int layerA = -1,
                    int layerB = -1); // Store residuals in TProfiles? ; Filter
                                      // tracks if reference layers are provided
-  void drawResiduals(); // Draw TProfiles for residuals X and Y for each sensor
+  void
+  drawResiduals(std::string compareFile =
+                    ""); // Draw TProfiles for residuals X and Y for each sensor
   std::vector<o2::detectors::AlignParam>
   computeCorrectionsFromResiduals(); // Create vector of alignment parameters
                                      // from stored TProfiles
@@ -135,6 +137,18 @@ inline void preAlignerMFT::initialize(std::string geometryFileName = "",
   mUnCompClusters.reserve(mCompClusters.size());
   std::vector<unsigned char>::iterator pattIt = mPatterns.begin();
 
+  mXResiduals =
+      new TProfile("mXResiduals", "x residuals vs chipID", 936, 0, 936);
+  mXResiduals.SetXTitle("cluster.chipID ");
+  mXResiduals.SetYTitle("#delta_{x} (cm)");
+  mXResiduals.Sumw2();
+
+  mYResiduals =
+      new TProfile("mYResiduals", "y residuals vs chipID", 936, 0, 936);
+  mYResiduals.SetXTitle("cluster.chipID ");
+  mYResiduals.SetYTitle("#delta_{y} (cm)");
+  mYResiduals.Sumw2();
+
   for (const auto &compCluster : mCompClusters) {
 
     auto chipID = compCluster.getChipID();
@@ -222,21 +236,37 @@ inline void preAlignerMFT::computeResiduals(int layerA = -1, int layerB = -1) {
 }
 
 //_________________________________________________________________________________________________
-inline void preAlignerMFT::drawResiduals() {
+inline void preAlignerMFT::drawResiduals(std::string compareFile = "") {
   std::cout << "Drawing residuals" << std::endl;
 
   auto c = new TCanvas("c", "", 800, 400);
   c->Divide(2, 1);
 
-  mXResiduals.GetYaxis()->SetTitle("#delta_{x} (cm)");
-  mXResiduals.GetXaxis()->SetTitle("cluster.chipID ");
-  mYResiduals.GetYaxis()->SetTitle("#delta_{y} (cm)");
-  mYResiduals.GetXaxis()->SetTitle("cluster.chipID ");
-
   c->cd(1);
   mXResiduals.Draw("EPZ");
   c->cd(2);
   mYResiduals.Draw("EPZ");
+
+  if (!compareFile.empty()) {
+    TFile *f = new TFile(compareFile, "read");
+    auto leg = new TLegend();
+    TProfile *mXResidualsToCompare;
+    TProfile *mYResidualsToCompare;
+    mXResidualsToCompare = (TProfile *)f->Get("mXResiduals");
+    mYResidualsToCompare = (TProfile *)f->Get("mYResiduals");
+
+    c->cd(1);
+    mXResidualsToCompare.Draw("EPZ same");
+    mXResidualsToCompare.SetLineColor(kRed + 1);
+    c->cd(2);
+    mYResidualsToCompare.Draw("EPZ same");
+    mYResidualsToCompare.SetLineColor(kRed + 1);
+
+    leg->AddEntry(mYResiduals, "prealign", "pl");
+    leg->AddEntry(mYResidualsToCompare, "file to compare", "pl");
+    leg->SetBorderSize(0);
+    leg->Draw();
+  }
 }
 
 //_________________________________________________________________________________________________
@@ -245,6 +275,76 @@ preAlignerMFT::computeCorrectionsFromResiduals() {
   // Compute alignment parameters to centralize residuals in each MFT sensors
   std::cout << "Computing alignement corrections from residuals" << std::endl;
   std::vector<o2::detectors::AlignParam> params;
+
+  double arrayResXchipID[ChipMappingMFT::NChips];
+  double arrayResYchipID[ChipMappingMFT::NChips];
+  double arrayResZchipID[ChipMappingMFT::NChips];
+  Int_t nbinx = mXResiduals.GetNbinsX();
+
+  for (int ibinx = 1; ibinx < nbinx + 1; ibinx++) {
+    auto resX = mXResiduals.GetBinContent(ibinx);
+    auto resY = mYResiduals.GetBinContent(ibinx);
+    // TODO: we could add constrains from bin errors
+    auto errX = mXResiduals.GetBinError(ibinx);
+    auto errY = mYResiduals.GetBinError(ibinx);
+    for (int chipgeo = 0; chipgeo < 936; chipgeo++) {
+      int binc = ibinx - 1;
+      if (binc == mChipIDGeoToRO[chipgeo]) {
+        auto clsLayer = mftChipMapper.chip2Layer(binc);
+        arrayResXchipID[chipgeo] += resX;
+        arrayResYchipID[chipgeo] += resY;
+        arrayResZchipID[chipgeo] += 0.0;
+      }
+    }
+  }
+
+  double lPsi, lTheta, lPhi = 0.;
+  Int_t nChip = 0;
+  bool glo = true;
+
+  TString sname = gman->composeSymNameMFT();
+  Int_t nHalf = gman->getNumberOfHalfs();
+
+  // Fill empty align param for each element which is not a sensor
+  params.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, glo);
+
+  for (Int_t hf = 0; hf < nHalf; hf++) {
+    Int_t nDisks = gman->getNumberOfDisksPerHalf(hf);
+    sname = gman->composeSymNameHalf(hf);
+    params.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, glo);
+
+    for (Int_t dk = 0; dk < nDisks; dk++) {
+      sname = gman->composeSymNameDisk(hf, dk);
+      params.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, glo);
+
+      Int_t nLadders = 0;
+      for (Int_t sensor = gman->getMinSensorsPerLadder();
+           sensor < gman->getMaxSensorsPerLadder() + 1; sensor++) {
+        nLadders += gman->getNumberOfLaddersPerDisk(hf, dk, sensor);
+      }
+
+      for (Int_t lr = 0; lr < nLadders; lr++) { // nLadders
+        sname = gman->composeSymNameLadder(hf, dk, lr);
+        Int_t nSensorsPerLadder = gman->getNumberOfSensorsPerLadder(hf, dk, lr);
+        params.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, glo);
+
+        for (Int_t sr = 0; sr < nSensorsPerLadder; sr++) {
+          sname = gman->composeSymNameChip(hf, dk, lr, sr);
+          // Follow the geometrical order for sensors construction
+          Int_t chipID = itsmft::ChipMappingMFT::mChipIDGeoToRO[nChip++];
+          Int_t uid = o2::base::GeometryManager::getSensID(
+              o2::detectors::DetID::MFT, chipID);
+          // printf("resX=%f, resY=%f \n ", arrayResXchipID[chip],
+          // arrayResYchipID[chip]);
+          params.emplace_back(sname, uid, arrayResXchipID[nChip],
+                              arrayResYchipID[nChip], arrayResZchipID[nChip],
+                              lPsi, lTheta, lPhi, glo);
+          nChip++;
+        }
+      }
+    }
+  }
+
   return params;
 }
 
@@ -389,9 +489,9 @@ void mftPreAligner() {
   pa.computeResiduals(
       layerA,
       layerB); // Filtering tracks -> unbiased  residuals should center at zero
-  pa.drawResiduals();
+  pa.drawResiduals("");
   pa.computeResiduals(); // No filtering
-  pa.drawResiduals();
+  pa.drawResiduals("");
 
   //  preAlignStep(1, 8); // Move to other layers once we are happy with
   //  previous step preAlignStep(2, 7); preAlignStep(3, 6);
