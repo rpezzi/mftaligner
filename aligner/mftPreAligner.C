@@ -3,7 +3,6 @@ class preAlignerMFT
  public:
   // Pre alignement functions
   void initialize(std::string geometryFileName = "", std::string alignParamFileName = "");                         // loads geometry, tracks, clusters, apply initial alignment if provided
-  void computeResiduals(int layerA = -1, int layerB = -1);                                                         // Store residuals in TProfiles? ; Filter tracks if reference layers are provided
   void drawResiduals(std::string compareFile = "");                                                                // Draw TProfiles for residuals X and Y for each sensor
   std::vector<o2::detectors::AlignParam> computeCorrectionsFromResiduals();                                        // Create vector of alignment parameters from stored TProfiles
   void applyAlignment(std::vector<o2::detectors::AlignParam> alignment, std::string geomFile = "");                // Apply alignment corrections to loaded geometry
@@ -19,12 +18,45 @@ class preAlignerMFT
   void preAlignStep(int layer1, int layer2, std::string geomFile = "")
   {
     std::cout << "Prealign step with reference layers: " << layer1 << " and " << layer2 << std::endl;
-    UpdateTrackParameters(layer1, layer2); // Ensure all track parameters are consistent with current geometry
     computeResiduals(layer1, layer2);
-    drawResiduals("");
     auto thisCorrection = computeCorrectionsFromResiduals();
     applyAlignment(thisCorrection, geomFile);
     exportPreAlignedGeometry("mftpre_geometry-aligned.root");
+  }
+
+  void computeResiduals(int layer1, int layer2)
+  { // Compute track-cluster residuals and store in TProfiles ; Filter for unbiased transformation if reference layers are provided
+    std::cout << "Computing residuals. Reference layers: " << layer1 << " and " << layer2 << std::endl;
+    resetTProfilesResiduals();
+    for (int entry = 0; entry < mNEntries; entry++) {
+      loadEntry(entry);
+      UpdateTrackParameters(layer1, layer2); // Ensure all track parameters are consistent with current geometry
+      computeResidualsSingleEntry(layer1, layer2);
+    }
+  }
+
+  void resetTProfilesResiduals()
+  {
+    static int step = 0;
+
+    if (mXResiduals) {
+      delete mXResiduals;
+    }
+
+    if (mYResiduals) {
+      delete mYResiduals;
+    }
+
+    mXResiduals = new TProfile(Form("mXResiduals_%d", step), "x residuals vs chipID", 936, 0., 936);
+    mXResiduals->SetXTitle("cluster.chipID ");
+    mXResiduals->SetYTitle("#delta_{x} (cm)");
+    mXResiduals->Sumw2();
+
+    mYResiduals = new TProfile(Form("mYResiduals_%d", step), "y residuals vs chipID", 936, 0., 936);
+    mYResiduals->SetXTitle("cluster.chipID ");
+    mYResiduals->SetYTitle("#delta_{y} (cm)");
+    mYResiduals->Sumw2();
+    step++;
   }
 
   void printTracks(int nTracks = 5)
@@ -61,10 +93,16 @@ class preAlignerMFT
  private:
   TProfile* mXResiduals = nullptr;
   TProfile* mYResiduals = nullptr;
+  TFile* trkFileIn = nullptr;
+  TFile* clusterFile = nullptr;
   std::vector<o2::mft::TrackMFT> mMFTTracks, *trackMFTVecP = &mMFTTracks;
   std::vector<int> trackExtClsVec, *trackExtClsVecP = &trackExtClsVec;
   std::vector<o2::itsmft::CompClusterExt> mCompClusters, *clsVecP = &mCompClusters;
   std::vector<unsigned char> mPatterns, *mPatternsP = &mPatterns;
+  int mNEntries = 0;
+  void loadEntry(int entry); // Load given entry from mfttrack and mftcluster trees.
+
+  void computeResidualsSingleEntry(int layerA = -1, int layerB = -1);
 
   std::vector<o2::BaseCluster<float>> mUnCompClusters; // MFT Clusters in local coordinate system
 
@@ -86,20 +124,25 @@ inline void preAlignerMFT::initialize(std::string geometryFileName = "", std::st
   gman->fillMatrixCache(o2::math_utils::bit2Mask(o2::math_utils::TransformType::L2G));
 
   // MFT Tracks
-  TFile* trkFileIn = new TFile("mfttracks.root");
+  trkFileIn = new TFile("mfttracks.root");
   mftTrackTree = (TTree*)trkFileIn->Get("o2sim");
   mftTrackTree->SetBranchAddress("MFTTrack", &trackMFTVecP);
   mftTrackTree->SetBranchAddress("MFTTrackClusIdx", &trackExtClsVecP);
-  std::cout << "Loading MFT tracks file with " << mftTrackTree->GetEntries() << " entries\n";
+  int nEntriesMFTTracks = mftTrackTree->GetEntries();
+  std::cout << "Loading MFT tracks file with " << nEntriesMFTTracks << " entries\n";
   mftTrackTree->GetEntry(0);
 
   // MFT Clusters
-  TFile clusterFile("mftclusters.root");
-  clsTree = (TTree*)clusterFile.Get("o2sim");
+  clusterFile = new TFile("mftclusters.root");
+  clsTree = (TTree*)clusterFile->Get("o2sim");
   clsTree->SetBranchAddress("MFTClusterComp", &clsVecP);
   clsTree->SetBranchAddress("MFTClusterPatt", &mPatternsP);
-  std::cout << "Loading MFT clusters file with " << clsTree->GetEntries() << " entries\n";
+  int nEntriesMFTClusters = clsTree->GetEntries();
+  std::cout << "Loading MFT clusters file with " << nEntriesMFTClusters << " entries\n";
   clsTree->GetEntry(0);
+
+  assert(nEntriesMFTClusters == nEntriesMFTTracks);
+  mNEntries = nEntriesMFTClusters;
 
   // Cluster pattern dictionary
   std::string dictfile = "MFTdictionary.bin";
@@ -111,35 +154,6 @@ inline void preAlignerMFT::initialize(std::string geometryFileName = "", std::st
   } else {
     printf("Can not run without dictionary !\n");
     exit;
-  }
-
-  // Cache compact cluster positions (use topology dictionary and clusters patterns only once)
-  if (!mUnCompClusters.size()) {
-    mUnCompClusters.reserve(mCompClusters.size());
-    std::vector<unsigned char>::iterator pattIt = mPatterns.begin();
-
-    for (const auto& compCluster : mCompClusters) {
-
-      auto chipID = compCluster.getChipID();
-      auto pattID = compCluster.getPatternID();
-
-      o2::math_utils::Point3D<float> locC;
-      float sigmaX2 = 1.806335945e-06F, sigmaY2 = 2.137443971e-06F; // Dummy COG errors (about half pixel size) from o2::mft::ioutils::DefClusError2Row and o2::mft::ioutils::DefClusError2Col
-      if (pattID != o2::itsmft::CompCluster::InvalidPatternID) {
-        sigmaX2 = mDict.getErr2X(pattID); // ALPIDE local X coordinate => MFT global X coordinate (ALPIDE rows)
-        sigmaY2 = mDict.getErr2Z(pattID); // ALPIDE local Z coordinate => MFT global Y coordinate (ALPIDE columns)
-        if (!mDict.isGroup(pattID)) {
-          locC = mDict.getClusterCoordinates(compCluster);
-        } else {
-          o2::itsmft::ClusterPattern patt(pattIt);
-          locC = mDict.getClusterCoordinates(compCluster, patt);
-        }
-      } else {
-        o2::itsmft::ClusterPattern patt(pattIt);
-        locC = mDict.getClusterCoordinates(compCluster, patt, false);
-      }
-      mUnCompClusters.emplace_back(chipID, locC);
-    }
   }
 
   // Initialize total alignment vector
@@ -185,39 +199,53 @@ inline void preAlignerMFT::initialize(std::string geometryFileName = "", std::st
 }
 
 //_________________________________________________________________________________________________
-inline void preAlignerMFT::computeResiduals(int layerA = -1, int layerB = -1)
+inline void preAlignerMFT::loadEntry(int entry)
+{
+  // std::cout << " Loading tree entry # " << entry << std::endl;
+  assert(entry > mNEntries);
+  mftTrackTree->GetEntry(entry);
+  clsTree->GetEntry(entry);
+
+  // Cache compact cluster positions
+  mUnCompClusters.clear();
+  mUnCompClusters.reserve(mCompClusters.size());
+  std::vector<unsigned char>::iterator pattIt = mPatterns.begin();
+
+  for (const auto& compCluster : mCompClusters) {
+
+    auto chipID = compCluster.getChipID();
+    auto pattID = compCluster.getPatternID();
+
+    o2::math_utils::Point3D<float> locC;
+    float sigmaX2 = 1.806335945e-06F, sigmaY2 = 2.137443971e-06F; // Dummy COG errors (about half pixel size) from o2::mft::ioutils::DefClusError2Row and o2::mft::ioutils::DefClusError2Col
+    if (pattID != o2::itsmft::CompCluster::InvalidPatternID) {
+      sigmaX2 = mDict.getErr2X(pattID); // ALPIDE local X coordinate => MFT global X coordinate (ALPIDE rows)
+      sigmaY2 = mDict.getErr2Z(pattID); // ALPIDE local Z coordinate => MFT global Y coordinate (ALPIDE columns)
+      if (!mDict.isGroup(pattID)) {
+        locC = mDict.getClusterCoordinates(compCluster);
+      } else {
+        o2::itsmft::ClusterPattern patt(pattIt);
+        locC = mDict.getClusterCoordinates(compCluster, patt);
+      }
+    } else {
+      o2::itsmft::ClusterPattern patt(pattIt);
+      locC = mDict.getClusterCoordinates(compCluster, patt, false);
+    }
+    mUnCompClusters.emplace_back(chipID, locC);
+  }
+}
+
+//_________________________________________________________________________________________________
+inline void preAlignerMFT::computeResidualsSingleEntry(int layerA = -1, int layerB = -1)
 {
   // Compute residuals for each MFT sensor.
-  static int step = 0;
-
-  std::cout << "Computing residuals" << std::endl;
-
-  if (mXResiduals) {
-    delete mXResiduals;
-  }
-
-  if (mYResiduals) {
-    delete mYResiduals;
-  }
-
-  mXResiduals = new TProfile(Form("mXResiduals_%d", step), "x residuals vs chipID", 936, 0., 936);
-  mXResiduals->SetXTitle("cluster.chipID ");
-  mXResiduals->SetYTitle("#delta_{x} (cm)");
-  mXResiduals->Sumw2();
-
-  mYResiduals = new TProfile(Form("mYResiduals_%d", step), "y residuals vs chipID", 936, 0., 936);
-  mYResiduals->SetXTitle("cluster.chipID ");
-  mYResiduals->SetYTitle("#delta_{y} (cm)");
-  mYResiduals->Sumw2();
-  step++;
-
+  // std::cout << "Computing residuals" << std::endl;
   auto layerFilter = [this, layerA, layerB](auto track) {
     auto zLayerA = o2::mft::constants::LayerZPosition[layerA]; // TODO: make this alignment proof
     auto zLayerB = o2::mft::constants::LayerZPosition[layerB];
     return (std::abs(track.getZ() - zLayerA) < 0.2 and std::abs(track.getOutParam().getZ() - zLayerB) < 0.2);
   };
-
-  auto fillResidualProfiles = [this](auto track) {
+  auto fillResidualProfiles = [this](auto track, auto biasedResiduals = false) {
     // loop over all track clusters, compute and fill TProfile histograms
     for (auto icls = 0; icls < track.getNumberOfPoints(); icls++) {
       const auto cluster = getCluster(track, icls);
@@ -229,8 +257,8 @@ inline void preAlignerMFT::computeResiduals(int layerA = -1, int layerB = -1)
       auto resY = track.getY() - cluster.y();
 
       // Fill histograms
-      if (resX * resY) {
-        std::cout << " Residuals for icls " << icls << ": resX = " << resX << " ; resY = " << resY << " from chipID = " << chipID << std::endl;
+      if (resX * resY or biasedResiduals) {
+        // std::cout << " Residuals for icls " << icls << ": resX = " << resX << " ; resY = " << resY << " from chipID = " << chipID << std::endl;
         mXResiduals->Fill(1.0 * chipID, 1.0 * resX);
         mYResiduals->Fill(chipID, resY);
       }
@@ -240,7 +268,7 @@ inline void preAlignerMFT::computeResiduals(int layerA = -1, int layerB = -1)
   if (layerA == -1 or layerB == -1) {
     // compute residuals for all tracks and respective clusters
     for (auto& track : mMFTTracks) {
-      fillResidualProfiles(track);
+      fillResidualProfiles(track, true);
     }
   } else {
     // compute unbiased residuals:
@@ -249,7 +277,7 @@ inline void preAlignerMFT::computeResiduals(int layerA = -1, int layerB = -1)
     //   3. This method assumes layerA and layerB are reference for the track sample.
     for (auto& track : mMFTTracks) {
       if (layerFilter(track)) {
-        fillResidualProfiles(track);
+        fillResidualProfiles(track, false);
       }
     }
   }
@@ -336,8 +364,8 @@ inline std::vector<o2::detectors::AlignParam> preAlignerMFT::computeCorrectionsF
           auto resX = mXResiduals->GetBinContent(chipID + 1);
           auto resY = mYResiduals->GetBinContent(chipID + 1);
           if (resX * resY)
-            printf("resX=%f, resY=%f for chipID %d \n ", resX, resY, chipID);
-          params.emplace_back(sname, uid, resX, resY, 0, lPsi, lTheta, lPhi, glo);
+            // printf("resX=%f, resY=%f for chipID %d \n ", resX, resY, chipID);
+            params.emplace_back(sname, uid, resX, resY, 0, lPsi, lTheta, lPhi, glo);
         }
       }
     }
@@ -372,7 +400,7 @@ inline void preAlignerMFT::UpdateTrackParameters(int layerA = -1, int layerB = -
   // By default all tracks are updated using a linear model computed using first and last track-clusters.
   // If reference layers are provided, only those tracks with clusters in both layers are updated
 
-  std::cout << "Updating track parameters for current geometry" << std::endl;
+  // std::cout << "Updating track parameters for current geometry" << std::endl;
 
   auto getClusterIdLayer = [this](o2::mft::TrackMFT mftTrack, int layer) { // Returns the MFT
     auto offset = mftTrack.getExternalClusterIndexOffset();
@@ -481,25 +509,24 @@ void mftPreAligner()
 {
   preAlignerMFT pa;
   pa.initialize();
-  pa.printTracks();
+
   int layerA = 0, layerB = 9;
-  pa.preAlignStep(layerA, layerB);          // Start with longest tracks
-  pa.UpdateTrackParameters(layerA, layerB); // Ensure all track parameters are consistent with current geometry
+  pa.preAlignStep(layerA, layerB); // Start with longest tracks
+  pa.drawResiduals("");
   pa.computeResiduals(layerA, layerB);
   pa.drawResiduals("");
 
   auto test = true;
   if (test) { // Check validity of file produced in previous step
     std::cout << " Test1: Check use of file produced in previous step\n";
-    pa.initialize("mftpre"); // Reload, starting from geometry file produced by previous call to preAlignStep
-    pa.UpdateTrackParameters(layerA, layerB);
+    pa.initialize("mftpre");             // Reload, starting from geometry file produced by previous call to preAlignStep
     pa.computeResiduals(layerA, layerB); // Initial residuals should be identical as previous execution
     pa.drawResiduals("");
 
     layerA = 1, layerB = 8;
     std::cout << " Test1 contd.: Prealign with reference layers: " << layerA << " and " << layerB << std::endl;
     pa.preAlignStep(layerA, layerB, "mftpre"); // Prealign with different reference layers
-    pa.UpdateTrackParameters(layerA, layerB);
+    pa.drawResiduals("");
     pa.computeResiduals(layerA, layerB);
     pa.drawResiduals("");
   }
