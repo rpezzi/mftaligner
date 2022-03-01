@@ -24,7 +24,7 @@ class preAlignerMFT
     exportPreAlignedGeometry("mftpre_geometry-aligned.root");
   }
 
-  void computeResiduals(int layer1, int layer2)
+  void computeResiduals(int layer1 = -1, int layer2 = -1)
   { // Compute track-cluster residuals and store in TProfiles ; Filter for unbiased transformation if reference layers are provided
     std::cout << "Computing residuals. Reference layers: " << layer1 << " and " << layer2 << std::endl;
     resetTProfilesResiduals();
@@ -363,9 +363,10 @@ inline std::vector<o2::detectors::AlignParam> preAlignerMFT::computeCorrectionsF
           Int_t uid = o2::base::GeometryManager::getSensID(o2::detectors::DetID::MFT, chipID);
           auto resX = mXResiduals->GetBinContent(chipID + 1);
           auto resY = mYResiduals->GetBinContent(chipID + 1);
-          if (resX * resY)
-            // printf("resX=%f, resY=%f for chipID %d \n ", resX, resY, chipID);
-            params.emplace_back(sname, uid, resX, resY, 0, lPsi, lTheta, lPhi, glo);
+          if (resX * resY and 0) {
+            printf("resX=%f, resY=%f for chipID %d \n ", resX, resY, chipID);
+          }
+          params.emplace_back(sname, uid, resX, resY, 0, lPsi, lTheta, lPhi, glo);
         }
       }
     }
@@ -380,9 +381,6 @@ inline void preAlignerMFT::applyAlignment(std::vector<o2::detectors::AlignParam>
   std::cout << "Applying alignment" << std::endl;
   gman = o2::mft::GeometryTGeo::Instance();
 
-  o2::base::GeometryManager::loadGeometry(geomFile.c_str(), false, true);
-  o2::base::GeometryManager::applyAlignment(alignment);
-
   int index = 0;
   for (auto& alpar : alignment) {
     // alpar.applyToGeometry();
@@ -390,6 +388,10 @@ inline void preAlignerMFT::applyAlignment(std::vector<o2::detectors::AlignParam>
     mResultingAlignment[index].setGlobalParams(mResultingAlignment[index].createMatrix() * alpar.createMatrix()); // Increment aligment params: is this true?
     index++;
   }
+
+  o2::base::GeometryManager::loadGeometry(geomFile.c_str(), false, true);
+  o2::base::GeometryManager::applyAlignment(getFinalAlignment());
+
   gman->updateL2GMatrixCache();
 }
 
@@ -510,13 +512,28 @@ void mftPreAligner()
   preAlignerMFT pa;
   pa.initialize();
 
-  int layerA = 0, layerB = 9;
-  pa.preAlignStep(layerA, layerB); // Start with longest tracks
-  pa.drawResiduals("");
-  pa.computeResiduals(layerA, layerB);
-  pa.drawResiduals("");
+  auto debugAlignStep = [&pa](int layerA, int layerB) { // Draws detailed residual status at each alignment step
+    pa.computeResiduals();                              // Complete residuals
+    pa.drawResiduals("");
+    pa.preAlignStep(layerA, layerB); // Unbiased residuals
+    pa.drawResiduals("");
+    pa.computeResiduals(layerA, layerB); // Corrected residuals / centered at zero
+    pa.drawResiduals("");
+  };
 
-  auto test = true;
+  debugAlignStep(0, 9); // Start with longest tracks
+  debugAlignStep(1, 8);
+  pa.preAlignStep(2, 7);
+  pa.preAlignStep(3, 6);
+  pa.preAlignStep(0, 9);
+  pa.preAlignStep(1, 8);
+  debugAlignStep(0, 9);
+
+  // =====================================================================================================================
+  // Sanity test checks
+  auto test = !true;
+  int layerA = 0;
+  int layerB = 9;
   if (test) { // Check validity of file produced in previous step
     std::cout << " Test1: Check use of file produced in previous step\n";
     pa.initialize("mftpre");             // Reload, starting from geometry file produced by previous call to preAlignStep
@@ -541,8 +558,5 @@ void mftPreAligner()
     pa.computeResiduals(layerA, layerB);
     pa.drawResiduals("");
   }
-
-  //  preAlignStep(1, 8); // Move to other layers once we are happy with previous step
-  //  preAlignStep(2, 7);
-  //  preAlignStep(3, 6);
+  // =====================================================================================================================
 }
