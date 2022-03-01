@@ -1,14 +1,38 @@
+#if !defined(__CLING__) || defined(__ROOTCLING__)
+
+#include "DetectorsCommonDataFormats/AlignParam.h"
+#include "ReconstructionDataFormats/BaseCluster.h"
+#include <DataFormatsITSMFT/CompCluster.h>
+#include "DataFormatsITSMFT/TopologyDictionary.h"
+#include "ITSMFTReconstruction/ChipMappingMFT.h"
+#include "DataFormatsMFT/TrackMFT.h"
+#include "MFTBase/GeometryTGeo.h"
+#include "MFTBase/Constants.h"
+#include "MFTSimulation/Detector.h"
+
+#include <TFile.h>
+#include <TCanvas.h>
+#include <TProfile.h>
+#include <TTree.h>
+
+#endif
+
 class preAlignerMFT
 {
  public:
   // Pre alignement functions
-  void initialize(std::string geometryFileName = "", std::string alignParamFileName = "");                         // loads geometry, tracks, clusters, apply initial alignment if provided
-  void drawResiduals(std::string compareFile = "");                                                                // Draw TProfiles for residuals X and Y for each sensor
-  std::vector<o2::detectors::AlignParam> computeCorrectionsFromResiduals();                                        // Create vector of alignment parameters from stored TProfiles
-  void applyAlignment(std::vector<o2::detectors::AlignParam> alignment, std::string geomFile = "");                // Apply alignment corrections to loaded geometry
-  void UpdateTrackParameters(int layerA = -1, int layerB = -1);                                                    // Recalculate track parameters mimicking the tracker initialization for alignment linear tracks
-  void savePreAlignedParameters(std::vector<o2::detectors::AlignParam> alignment, std::string alignParamFileName); // Saves ccdb-like alignment objects
-  void exportPreAlignedGeometry(std::string geomFile = "");                                                        // Export aligned geometry file
+  void initialize(std::string geometryFileName = "", std::string alignParamFileName = "");          // loads geometry, tracks, clusters, apply initial alignment if provided
+  void drawResiduals(std::string compareFile = "");                                                 // Draw TProfiles for residuals X and Y for each sensor
+  std::vector<o2::detectors::AlignParam> computeCorrectionsFromResiduals();                         // Create vector of alignment parameters from stored TProfiles
+  void applyAlignment(std::vector<o2::detectors::AlignParam> alignment, std::string geomFile = ""); // Apply alignment corrections to loaded geometry
+  void UpdateTrackParameters(int layerA = -1, int layerB = -1);                                     // Recalculate track parameters mimicking the tracker initialization for alignment linear tracks
+  void savePreAlignedParameters(std::vector<o2::detectors::AlignParam> alignment,
+                                std::string alignParamFileName = "mftprealignparam.root"); // Saves provided algnment parameters in a ccdb compatible alignment object
+  void savePreAlignedParameters(std::string alignParamFileName = "mftprealignparam.root")
+  { // Saves mResultingAlignment in a ccdb compatible alignment object
+    savePreAlignedParameters(mResultingAlignment, alignParamFileName);
+  }
+  void exportPreAlignedGeometry(std::string geomFile = ""); // Export aligned geometry file
   void pushAlignmentToCCDB(std::vector<o2::detectors::AlignParam> alignment, const std::string& ccdbHost,
                            long tmin, long tmax, const std::string& objectPath); // Push alignment parameters to CCDB
   void saveResidualCanvases(std::string outputFileName = "prealignmentResiduals.root");
@@ -33,6 +57,7 @@ class preAlignerMFT
       UpdateTrackParameters(layer1, layer2); // Ensure all track parameters are consistent with current geometry
       computeResidualsSingleEntry(layer1, layer2);
     }
+    drawResiduals();
   }
 
   void resetTProfilesResiduals()
@@ -116,7 +141,7 @@ class preAlignerMFT
 };
 
 //_________________________________________________________________________________________________
-inline void preAlignerMFT::initialize(std::string geometryFileName = "", std::string alignParamFileName = "")
+inline void preAlignerMFT::initialize(std::string geometryFileName, std::string alignParamFileName)
 {
   std::cout << "Initializing MFT pre aligner" << std::endl;
 
@@ -203,7 +228,7 @@ inline void preAlignerMFT::initialize(std::string geometryFileName = "", std::st
 inline void preAlignerMFT::loadEntry(int entry)
 {
   // std::cout << " Loading tree entry # " << entry << std::endl;
-  assert(entry > mNEntries);
+  assert(entry < mNEntries);
   mftTrackTree->GetEntry(entry);
   clsTree->GetEntry(entry);
 
@@ -237,7 +262,7 @@ inline void preAlignerMFT::loadEntry(int entry)
 }
 
 //_________________________________________________________________________________________________
-inline void preAlignerMFT::computeResidualsSingleEntry(int layerA = -1, int layerB = -1)
+inline void preAlignerMFT::computeResidualsSingleEntry(int layerA, int layerB)
 {
   // Compute residuals for each MFT sensor.
   // std::cout << "Computing residuals" << std::endl;
@@ -285,7 +310,7 @@ inline void preAlignerMFT::computeResidualsSingleEntry(int layerA = -1, int laye
 }
 
 //_________________________________________________________________________________________________
-inline void preAlignerMFT::drawResiduals(std::string compareFile = "")
+inline void preAlignerMFT::drawResiduals(std::string compareFile)
 {
   std::cout << "Drawing residuals" << std::endl;
   static int step = 0;
@@ -398,7 +423,7 @@ inline void preAlignerMFT::applyAlignment(std::vector<o2::detectors::AlignParam>
 }
 
 //_________________________________________________________________________________________________
-inline void preAlignerMFT::UpdateTrackParameters(int layerA = -1, int layerB = -1)
+inline void preAlignerMFT::UpdateTrackParameters(int layerA, int layerB)
 {
   // This method updates track linear track parameters.
   // By default all tracks are updated using a linear model computed using first and last track-clusters.
