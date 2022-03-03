@@ -33,6 +33,7 @@ class preAlignerMFT
   { // Saves mResultingAlignment in a ccdb compatible alignment object
     savePreAlignedParameters(mResultingAlignment, alignParamFileName);
   }
+  void loadPreAlignedParameters(std::string alignParamFileName = "mftprealignparam.root");
   void exportPreAlignedGeometry(std::string geomFile = ""); // Export aligned geometry file
   void pushAlignmentToCCDB(std::vector<o2::detectors::AlignParam> alignment, const std::string& ccdbHost,
                            long tmin, long tmax, const std::string& objectPath); // Push alignment parameters to CCDB
@@ -183,6 +184,54 @@ inline void preAlignerMFT::initialize(std::string geometryFileName, std::string 
 
   o2::base::GeometryManager::loadGeometry(geometryFileName.c_str(), false, true);
   gman = o2::mft::GeometryTGeo::Instance();
+
+  if (alignParamFileName.empty()) {
+    // Initialize trivial vector of alignment parameters if no alignParamFileName
+    if (!mResultingAlignment.size()) {
+      Int_t nChip = 0;
+      mResultingAlignment.clear();
+      TString sname = gman->composeSymNameMFT();
+      Int_t nHalf = gman->getNumberOfHalfs();
+      mResultingAlignment.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, true);
+
+      for (Int_t hf = 0; hf < nHalf; hf++) {
+        Int_t nDisks = gman->getNumberOfDisksPerHalf(hf);
+        sname = gman->composeSymNameHalf(hf);
+        mResultingAlignment.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, true);
+
+        for (Int_t dk = 0; dk < nDisks; dk++) {
+          sname = gman->composeSymNameDisk(hf, dk);
+          mResultingAlignment.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, true);
+
+          Int_t nLadders = 0;
+          for (Int_t sensor = gman->getMinSensorsPerLadder();
+               sensor < gman->getMaxSensorsPerLadder() + 1; sensor++) {
+            nLadders += gman->getNumberOfLaddersPerDisk(hf, dk, sensor);
+          }
+
+          for (Int_t lr = 0; lr < nLadders; lr++) { // nLadders
+            sname = gman->composeSymNameLadder(hf, dk, lr);
+            Int_t nSensorsPerLadder = gman->getNumberOfSensorsPerLadder(hf, dk, lr);
+            mResultingAlignment.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, true);
+
+            for (Int_t sr = 0; sr < nSensorsPerLadder; sr++) {
+              sname = gman->composeSymNameChip(hf, dk, lr, sr);
+              // Follow the geometrical order for sensors construction
+              Int_t chipID = o2::itsmft::ChipMappingMFT::mChipIDGeoToRO[nChip++];
+              Int_t uid = o2::base::GeometryManager::getSensID(o2::detectors::DetID::MFT, chipID);
+              mResultingAlignment.emplace_back(sname, uid, 0, 0, 0, 0, 0, 0, true);
+              nChip++;
+            }
+          }
+        }
+      }
+    }
+  } else {
+    // Load vector of alignment parameters and apply to ideal geometry
+    loadPreAlignedParameters(alignParamFileName);
+    o2::base::GeometryManager::applyAlignment(getFinalAlignment());
+  }
+
   gman->fillMatrixCache(o2::math_utils::bit2Mask(o2::math_utils::TransformType::L2G));
 
   // MFT Tracks
@@ -215,48 +264,7 @@ inline void preAlignerMFT::initialize(std::string geometryFileName, std::string 
     mDict.readBinaryFile(dictfile);
   } else {
     printf("Can not run without dictionary !\n");
-    exit;
-  }
-
-  // Initialize total alignment vector
-  if (!mResultingAlignment.size()) {
-    Int_t nChip = 0;
-    mResultingAlignment.clear();
-    TString sname = gman->composeSymNameMFT();
-    Int_t nHalf = gman->getNumberOfHalfs();
-    mResultingAlignment.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, true);
-
-    for (Int_t hf = 0; hf < nHalf; hf++) {
-      Int_t nDisks = gman->getNumberOfDisksPerHalf(hf);
-      sname = gman->composeSymNameHalf(hf);
-      mResultingAlignment.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, true);
-
-      for (Int_t dk = 0; dk < nDisks; dk++) {
-        sname = gman->composeSymNameDisk(hf, dk);
-        mResultingAlignment.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, true);
-
-        Int_t nLadders = 0;
-        for (Int_t sensor = gman->getMinSensorsPerLadder();
-             sensor < gman->getMaxSensorsPerLadder() + 1; sensor++) {
-          nLadders += gman->getNumberOfLaddersPerDisk(hf, dk, sensor);
-        }
-
-        for (Int_t lr = 0; lr < nLadders; lr++) { // nLadders
-          sname = gman->composeSymNameLadder(hf, dk, lr);
-          Int_t nSensorsPerLadder = gman->getNumberOfSensorsPerLadder(hf, dk, lr);
-          mResultingAlignment.emplace_back(sname, -1, 0, 0, 0, 0, 0, 0, true);
-
-          for (Int_t sr = 0; sr < nSensorsPerLadder; sr++) {
-            sname = gman->composeSymNameChip(hf, dk, lr, sr);
-            // Follow the geometrical order for sensors construction
-            Int_t chipID = o2::itsmft::ChipMappingMFT::mChipIDGeoToRO[nChip++];
-            Int_t uid = o2::base::GeometryManager::getSensID(o2::detectors::DetID::MFT, chipID);
-            mResultingAlignment.emplace_back(sname, uid, 0, 0, 0, 0, 0, 0, true);
-            nChip++;
-          }
-        }
-      }
-    }
+    throw std::exception();
   }
 }
 
@@ -576,6 +584,22 @@ inline void preAlignerMFT::savePreAlignedParameters(std::vector<o2::detectors::A
     printf("Storing MFT alignment in local file %s \n", alignParamFileName.c_str());
     TFile algFile(alignParamFileName.c_str(), "recreate");
     algFile.WriteObjectAny(&alignment, "std::vector<o2::detectors::AlignParam>", "alignment");
+    algFile.Close();
+  }
+}
+
+//_________________________________________________________________________________________________
+inline void preAlignerMFT::loadPreAlignedParameters(std::string alignParamFileName)
+{
+  if (!alignParamFileName.empty()) {
+    std::cout << "Loading alignment parameters from " << alignParamFileName << std::endl;
+    TFile algFile(alignParamFileName.c_str());
+    auto alignment = algFile.Get<std::vector<o2::detectors::AlignParam>>("alignment");
+    if (alignment) {
+      mResultingAlignment = *alignment;
+    } else {
+      throw std::exception();
+    }
     algFile.Close();
   }
 }
