@@ -23,6 +23,7 @@ class preAlignerMFT
   // Pre alignement functions
   void initialize(std::string geometryFileName = "", std::string alignParamFileName = "");          // loads geometry, tracks, clusters, apply initial alignment if provided
   void drawResiduals(std::string compareFile = "");                                                 // Draw TProfiles for residuals X and Y for each sensor
+  void drawResidualsAtIP();                                                                         // Draw TH1 histograms for residuals at the nominal IP
   std::vector<o2::detectors::AlignParam> computeCorrectionsFromResiduals();                         // Create vector of alignment parameters from stored TProfiles
   void applyAlignment(std::vector<o2::detectors::AlignParam> alignment, std::string geomFile = ""); // Apply alignment corrections to loaded geometry
   void UpdateTrackParameters(int layerA = -1, int layerB = -1);                                     // Recalculate track parameters mimicking the tracker initialization for alignment linear tracks
@@ -58,6 +59,38 @@ class preAlignerMFT
       computeResidualsSingleEntry(layer1, layer2);
     }
     drawResiduals();
+  }
+
+  void computeResidualsAtIPSingleEntry();
+  void computeResidualsAtIP()
+  { // Compute track-cluster residuals and store in TProfiles ; Filter for unbiased transformation if reference layers are provided
+    std::cout << "Computing residuals at nominal IP" << std::endl;
+
+    static int step = 0;
+
+    if (mXResidualsAtIP) {
+      delete mXResidualsAtIP;
+    }
+
+    if (mYResidualsAtIP) {
+      delete mYResidualsAtIP;
+    }
+
+    mXResidualsAtIP = new TH1F(Form("mXResidualsAtIP_%d", step), "x residuals at IP", 2000, -10, 10);
+    mXResidualsAtIP->SetXTitle("#delta_{x} (cm) ");
+    mXResidualsAtIP->SetYTitle("Entries");
+
+    mYResidualsAtIP = new TH1F(Form("mYResidualsAtIP_%d", step), "y residuals at IP", 2000, -10, 10);
+    mYResidualsAtIP->SetXTitle("#delta_{y} (cm) ");
+    mYResidualsAtIP->SetYTitle("Entries");
+    step++;
+
+    for (int entry = 0; entry < mNEntries; entry++) {
+      loadEntry(entry);
+      UpdateTrackParameters(); // Ensure all track parameters are consistent with current geometry
+      computeResidualsAtIPSingleEntry();
+    }
+    drawResidualsAtIP();
   }
 
   void resetTProfilesResiduals()
@@ -117,8 +150,11 @@ class preAlignerMFT
 
  private:
   std::vector<TCanvas*> mResidualCanvases;
+  std::vector<TCanvas*> mResidualCanvasesAtIP;
   TProfile* mXResiduals = nullptr;
   TProfile* mYResiduals = nullptr;
+  TH1F* mXResidualsAtIP = nullptr;
+  TH1F* mYResidualsAtIP = nullptr;
   TFile* trkFileIn = nullptr;
   TFile* clusterFile = nullptr;
   std::vector<o2::mft::TrackMFT> mMFTTracks, *trackMFTVecP = &mMFTTracks;
@@ -310,6 +346,28 @@ inline void preAlignerMFT::computeResidualsSingleEntry(int layerA, int layerB)
 }
 
 //_________________________________________________________________________________________________
+inline void preAlignerMFT::computeResidualsAtIPSingleEntry()
+{
+  // Compute residuals at nominal IP
+
+  auto fillResidualAtIP = [this](auto track) {
+    track.propagateParamToZlinear(0);
+
+    // Calculate residuals
+    auto resX = track.getX();
+    auto resY = track.getY();
+
+    // Fill histograms
+    mXResidualsAtIP->Fill(resX);
+    mYResidualsAtIP->Fill(resY);
+  };
+
+  for (auto& track : mMFTTracks) {
+    fillResidualAtIP(track);
+  }
+}
+
+//_________________________________________________________________________________________________
 inline void preAlignerMFT::drawResiduals(std::string compareFile)
 {
   std::cout << "Drawing residuals" << std::endl;
@@ -344,6 +402,22 @@ inline void preAlignerMFT::drawResiduals(std::string compareFile)
     leg->SetBorderSize(0);
     leg->Draw();
   } */
+}
+
+//_________________________________________________________________________________________________
+inline void preAlignerMFT::drawResidualsAtIP()
+{
+  std::cout << "Drawing residuals at IP" << std::endl;
+  static int step = 0;
+  auto c = new TCanvas(Form("ResidualsAtIP_%d", step), Form("ResidualsAtIP_%d", step), 1200, 800);
+  mResidualCanvasesAtIP.emplace_back(c);
+  step++;
+  c->Divide(2, 1);
+
+  c->cd(1);
+  mXResidualsAtIP->DrawClone("");
+  c->cd(2);
+  mYResidualsAtIP->DrawClone("");
 }
 
 //_________________________________________________________________________________________________
@@ -514,6 +588,10 @@ inline void preAlignerMFT::saveResidualCanvases(std::string outputFileName)
   TFile canvFile(outputFileName.c_str(), "recreate");
   TObjArray objarOut;
   for (auto canvas : mResidualCanvases) {
+    objarOut.Add(canvas);
+  }
+
+  for (auto canvas : mResidualCanvasesAtIP) {
     objarOut.Add(canvas);
   }
   objarOut.Write();
